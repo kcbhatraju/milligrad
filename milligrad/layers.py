@@ -7,40 +7,43 @@ from .utils import epsilon
 
 
 class Activation:
-    def __init__(self, activation):
-        self.activation = activation
+    def __init__(self, func="linear"):
+        self.func = func
+        self.params = []
     
     def __call__(self, x, training=True):
-        if self.activation == "relu":
+        if self.func == "linear":
+            self.output = x
+        elif self.func == "relu":
             self.output = relu(x)
-        elif self.activation == "tanh":
+        elif self.func == "tanh":
             self.output = tanh(x)
-        elif self.activation == "sigmoid":
+        elif self.func == "sigmoid":
             self.output = sigmoid(x)
-        elif self.activation == "softmax":
+        elif self.func == "softmax":
             self.output = softmax(x)
 
         return self.output
 
     def parameters(self):
-        return []
+        return self.params
 
 class Dense:
-    def __init__(self, in_features, out_features, activation=None, kernel_initializer="he_uniform", bias_initializer="zeros"):
+    def __init__(self, in_features, out_features, activation="linear", kernel_initializer="he_uniform", bias_initializer="zeros"):
         self.weights = Tensor_(_Initializer(kernel_initializer)(in_features, out_features, shape=(in_features, out_features)), requires_grad=True)
         self.biases = Tensor_(_Initializer(bias_initializer)(in_features, out_features, shape=(out_features,)), requires_grad=True)
-        self.activation = activation
+        self.activation = Activation(activation)
+
+        self.params = [self.weights, self.biases]
     
     def __call__(self, x, training=True):
         self.output = matmul(x, self.weights) + self.biases
-        
-        if self.activation:
-            self.output = Activation(self.activation)(self.output)
+        self.output = self.activation(self.output, training=training)
 
         return self.output
 
     def parameters(self):
-        return [self.weights, self.biases]
+        return self.params
 
 class BatchNormalization:
     def __init__(self, features=None, axis=0, momentum=0.99, gamma_initializer="ones", beta_initializer="zeros", moving_mean_initializer="zeros", moving_variance_initializer="ones"):
@@ -52,6 +55,8 @@ class BatchNormalization:
 
         self.running_mean = _Initializer(moving_mean_initializer)(features, shape=(features,))
         self.running_var = _Initializer(moving_variance_initializer)(features, shape=(features,))
+
+        self.params = [self.gamma, self.beta]
     
     def __call__(self, x, training=True):
         if training:
@@ -70,4 +75,4 @@ class BatchNormalization:
         return self.output
 
     def parameters(self):
-        return [self.gamma, self.beta]
+        return self.params

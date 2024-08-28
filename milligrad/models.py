@@ -2,6 +2,8 @@ class Sequential:
     def __init__(self, layers, training=True):
         self.layers = layers
         self.training = training
+
+        self.params = [param for layer in self.layers for param in layer.parameters()]
     
     def __call__(self, x):
         self.output = x
@@ -17,8 +19,4 @@ class Sequential:
         self.training = False
     
     def parameters(self):
-        params = []
-        for layer in self.layers:
-            params.extend(layer.parameters())
-        
-        return params
+        return self.params

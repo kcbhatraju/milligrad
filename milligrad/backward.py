@@ -128,9 +128,6 @@ class Tensor_:
     def item(self):
         return self._item
     
-    def set_item(self, value):
-        self._item = value
-    
     def update_item(self, value):
         self._item += value
     
@@ -489,14 +486,14 @@ class MeanNode(UnaryNode):
             "keepdims" : keepdims,
         }
 
-        self._extras["axes_lost"] = tuple(range(self._items["node"].ndim)) if axis is None else self._extras["axis"]
-        self._extras["num_lost_elements"] = np.prod([self._items["node"].shape[i] for i in self._extras["axes_lost"]])
+        self._extras["axes_lost"] = range(self._items["node"].ndim) if axis is None else self._extras["axis"]
+        self._extras["num_lost_elements"] = np.multiply.reduce([self._items["node"].shape[ax] for ax in self._extras["axes_lost"]])
 
-        self._detect_gradients(Tensor_(np.mean(self._items["node"], axis=axis, keepdims=keepdims)))
+        self._detect_gradients(Tensor_(np.add.reduce(self._items["node"], axis=axis, keepdims=keepdims) / self._extras["num_lost_elements"]))
     
     def _backward(self):
         grad_update = _DeferCompute(lambda: (self._output.grad() / self._extras["num_lost_elements"] if self._extras["keepdims"]
-                                             else np.expand_dims(self._output.grad() / self._extras["num_lost_elements"], axis=self._extras["axes_lost"])))
+                                             else np.expand_dims(self._output.grad() / self._extras["num_lost_elements"], axis=tuple(self._extras["axes_lost"]))))
         
         self._update_grads(grad_update, force_grad=True)
 
@@ -518,13 +515,13 @@ class SumNode(UnaryNode):
         self._extras = {
             "axis" : (axis,) if isinstance(axis, int) else axis,
             "keepdims" : keepdims,
-            "axes_lost" : tuple(range(self._items["node"].ndim)) if axis is None else axis
+            "axes_lost" : range(self._items["node"].ndim) if axis is None else axis
         }
 
         self._detect_gradients(Tensor_(np.add.reduce(self._items["node"], axis=axis, keepdims=keepdims)))
     
     def _backward(self):
         grad_update = _DeferCompute(lambda: (self._output.grad() if self._extras["keepdims"]
-                                             else np.expand_dims(self._output.grad(), axis=self._extras["axes_lost"])))
+                                             else np.expand_dims(self._output.grad(), axis=tuple(self._extras["axes_lost"]))))
         
         self._update_grads(grad_update, force_grad=True)
