@@ -1,31 +1,10 @@
 import numpy as np
 
 from .alg import matmul, relu, sigmoid, softmax, tanh
-from .backward import Tensor_
-from .initializers import (glorot_normal, glorot_uniform, he_normal,
-                           he_uniform, ones, zeros)
-from .utils import epsilon, getitem
+from .backward import Tensor_, to_numpy
+from .initializers import _Initializer
+from .utils import epsilon
 
-
-class _Initializer:
-    def __init__(self, name):
-        self.name = name
-
-    def __call__(self, *args, **kwargs):
-        if self.name == "glorot_uniform":
-            self.output = glorot_uniform(*args, **kwargs)
-        elif self.name == "glorot_normal":
-            self.output = glorot_normal(*args, **kwargs)
-        elif self.name == "he_uniform": 
-            self.output = he_uniform(*args, **kwargs)
-        elif self.name == "he_normal":
-            self.output = he_normal(*args, **kwargs)
-        elif self.name == "zeros":
-            self.output = zeros(*args, **kwargs)
-        elif self.name == "ones":
-            self.output = ones(*args, **kwargs)
-        
-        return self.output
 
 class Activation:
     def __init__(self, activation):
@@ -76,8 +55,10 @@ class BatchNormalization:
     
     def __call__(self, x, training=True):
         if training:
-            mean = getitem(x).mean(axis=self.axis)
-            var = getitem(x).var(axis=self.axis)
+            x_item = to_numpy(x)
+
+            mean = np.mean(x_item, axis=self.axis)
+            var = np.var(x_item, axis=self.axis)
             
             self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * mean
             self.running_var = self.momentum * self.running_var + (1 - self.momentum) * var

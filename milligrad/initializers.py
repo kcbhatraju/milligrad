@@ -38,3 +38,23 @@ def zeros(*_, **kwargs):
 def ones(*_, **kwargs):
     shape = kwargs["shape"]
     return np.ones(shape)
+
+class _Initializer:
+    def __init__(self, name):
+        self.name = name
+
+    def __call__(self, *args, **kwargs):
+        if self.name == "glorot_uniform":
+            self.output = glorot_uniform(*args, **kwargs)
+        elif self.name == "glorot_normal":
+            self.output = glorot_normal(*args, **kwargs)
+        elif self.name == "he_uniform": 
+            self.output = he_uniform(*args, **kwargs)
+        elif self.name == "he_normal":
+            self.output = he_normal(*args, **kwargs)
+        elif self.name == "zeros":
+            self.output = zeros(*args, **kwargs)
+        elif self.name == "ones":
+            self.output = ones(*args, **kwargs)
+        
+        return self.output

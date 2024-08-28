@@ -14,7 +14,7 @@ class SGD:
     
     def step(self):
         for param in self.params:
-            param.update_item(-self.lr * np.clip(param.grad(), -1., 1.))
+            param.update_item(-self.lr * param.grad())
 
 class Adam:
     def __init__(self, params, lr=0.001, beta1=0.9, beta2=0.999):

@@ -26,8 +26,8 @@ def tanh(arr):
 def sigmoid(arr):
     return SigmoidNode(arr)._output
 
-def softmax(arr, axis=-1):
-    return SoftmaxNode(arr, axis)._output
+def softmax(arr, axis=-1, perform_checks=False):
+    return SoftmaxNode(arr, axis, perform_checks)._output
 
 def binary_cross_entropy(y_true, y_pred, from_logits=False):
     if from_logits:
@@ -35,20 +35,20 @@ def binary_cross_entropy(y_true, y_pred, from_logits=False):
     
     return BCENode(y_true, y_pred)._output
 
-def cross_entropy(y_true, y_pred, axis=-1, from_logits=False):
+def cross_entropy(y_true, y_pred, axis=-1, from_logits=False, perform_checks=False):
     if from_logits:
-        return CrossEntropyWithLogitsNode(y_true, y_pred, axis)._output
+        return CrossEntropyWithLogitsNode(y_true, y_pred, axis, perform_checks)._output
     
-    return CrossEntropyNode(y_true, y_pred, axis)._output
+    return CrossEntropyNode(y_true, y_pred, axis, perform_checks)._output
 
 def mean_squared_error(y_true, y_pred):
     return MSENode(y_true, y_pred)._output
 
-def mean(arr, axis=None, keepdims=False):
-    return MeanNode(arr, axis, keepdims)._output
+def broadcast_to(arr, shape, perform_checks=False):
+    return BroadcastNode(arr, shape, perform_checks)._output
 
-def sum(arr, axis=None, keepdims=False):
-    return SumNode(arr, axis, keepdims)._output
+def mean(arr, axis=None, keepdims=False, perform_checks=False):
+    return MeanNode(arr, axis, keepdims, perform_checks)._output
 
-def broadcast_to(arr, shape):
-    return BroadcastNode(arr, shape)._output
+def sum(arr, axis=None, keepdims=False, perform_checks=False):
+    return SumNode(arr, axis, keepdims, perform_checks)._output

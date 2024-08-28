@@ -1,9 +1,83 @@
 import numpy as np
 
-from .utils import (_backward_checks, _ln, _sigmoid, _softmax,
-                    _topo_sort_grad_fns, _transpose, check_grad, check_item,
-                    check_leaf, check_type, epsilon, getitem, package_grad)
+from .utils import (_ln, _sigmoid, _softmax, _topological_sort, _transpose,
+                    epsilon, track_grad)
 
+
+def to_numpy(arr):
+    if isinstance(arr, Tensor_):
+        return arr.item()
+    
+    if not isinstance(arr, np.ndarray):
+        return np.array(arr, dtype=np.float64)
+    
+    return arr
+
+def package_grad(curr, req):
+    curr, req = to_numpy(curr), to_numpy(req)
+
+    if curr.shape == req.shape:
+        return curr
+
+    if curr.ndim >= req.ndim:
+        dims_to_remove = range(curr.ndim - req.ndim)
+        removed = np.add.reduce(curr, axis=tuple(dims_to_remove))
+
+        dims_to_tighten = (i for i, (rem_dim, req_dim) in enumerate(zip(removed.shape, req.shape)) if rem_dim != req_dim)
+        tightened = np.add.reduce(removed, axis=tuple(dims_to_tighten), keepdims=True)
+        
+        return tightened
+    
+    result = np.empty_like(req)
+    result[...] = curr
+    return result
+
+def check_grad(arr, raise_exception=False):
+    if not track_grad:
+        if raise_exception:
+            raise Exception("Gradient tracking is disabled globally")
+        
+        return False
+
+    if not isinstance(arr, Tensor_):
+        if raise_exception:
+            raise Exception("Not a Tensor object")
+        
+        return False
+    
+    if not arr.requires_grad():
+        if raise_exception:
+            raise Exception("Gradient tracking is disabled for this Tensor")
+            
+        return False
+
+    return True
+
+def check_item(arr, req, raise_exception=False):
+    if not np.allclose(arr, req):
+        if raise_exception:
+            raise Exception("Tensor item has changed after computation")
+        
+        return False
+
+    return True
+
+def check_type(arr, *reqs, raise_exception=False):
+    for req in reqs:
+        if isinstance(arr, req):
+            return True
+
+    if raise_exception:
+        raise Exception("Type does not match")
+    
+    return False
+
+def _backward_checks(grad_inputs, items):
+    for key, grad_val in grad_inputs.items():
+        check_grad(grad_val, raise_exception=True)
+        check_item(grad_val.item(), items[key], raise_exception=True)
+    
+    return True
 
 class Tensor_:
     def __init__(self, value, requires_grad=False):
@@ -55,12 +129,10 @@ class Tensor_:
         return self._item
     
     def set_item(self, value):
-        check_leaf(self, raise_exception=True)
-        self._item = getitem(value)
+        self._item = value
     
     def update_item(self, value):
-        check_leaf(self, raise_exception=True)
-        self._item += getitem(value)
+        self._item += value
     
     def grad(self):
         return self._grad
@@ -78,37 +150,36 @@ class Tensor_:
         return self._requires_grad
     
     def requires_grad_(self, requires_grad=True):
-        check_leaf(self, raise_exception=True)
-
-        if requires_grad != self._requires_grad:
-            self._requires_grad = requires_grad
-            self._grad = np.zeros_like(self._item, dtype=np.float64)
+        self._requires_grad = requires_grad
+        if not requires_grad:
+            self._grad_fn = None
     
     def detach(self):
         return Tensor_(self._item, requires_grad=False)
 
-    def backward(self, retain_graph=False):
-        if self._item.ndim > 0:
+    def backward(self, check_graph=False, retain_graph=False):
+        if self._item.ndim:
             raise Exception("Can only backpropagate from scalar outputs")
         
-        check_grad(self, raise_exception=True)
+        if check_graph:
+            check_grad(self, raise_exception=True)
 
-        if self._grad_fn:
-            check_item(self._item, self._grad_fn._items["output"], raise_exception=True)
+            if self._grad_fn:
+                check_item(self._item, self._grad_fn._items["output"], raise_exception=True)
 
         self.set_grad(1.)
 
         if self._grad_fn:
-            graph = _topo_sort_grad_fns(self._grad_fn)
+            graph = _topological_sort(self._grad_fn)
 
-            while graph:
-                curr_func = graph.pop()
+            for curr_func in reversed(graph):
+                if check_graph:
+                    _backward_checks(curr_func._grad_inputs, curr_func._items)
                 
-                _backward_checks(curr_func._grad_inputs, curr_func._items)
                 curr_func._backward()
-                
+
                 if not retain_graph:
-                    curr_func._output._grad_fn = None
+                    curr_func._output.requires_grad_(False)
                     del curr_func
     
     def __repr__(self):
@@ -117,37 +188,38 @@ class Tensor_:
         else:
             return f"mg.Tensor({self._item}, grad_fn={self._grad_fn.__class__.__name__})"
 
+class _DeferCompute:
+    def __init__(self, *funcs):
+        self._funcs = funcs
+        self._cache = {}
+
+    def __getitem__(self, idx):
+        if idx not in self._cache:
+            self._cache[idx] = self._funcs[idx]()
+        
+        return self._cache[idx]
+
 class Node:
     def __init__(self, raw_inputs, names):
         self._raw_inputs = raw_inputs
         self._names = names
-        self._populate_items()
-
-    def _populate_items(self):
-        self._items = {}
-        for i, name in enumerate(self._names):
-            self._items[name] = getitem(self._raw_inputs[i])
+        self._items = dict(zip(self._names, map(to_numpy, self._raw_inputs)))
     
     def _detect_gradients(self, output):
-        self._output = output
-        at_least_one_grad = False
-
         self._grad_inputs = {}
-        for i, name in enumerate(self._items.keys()):
+        for i, name in enumerate(self._names):
             if check_grad(self._raw_inputs[i]):
-                at_least_one_grad = True
                 self._grad_inputs[name] = self._raw_inputs[i]
-        
-        self._items["output"] = output.item()
 
-        if at_least_one_grad:
+        self._output = output
+        self._items["output"] = output.item()
+        
+        if self._grad_inputs:
             output.requires_grad_()
             output._grad_fn = self
     
     def _update_grads(self, grad_updates, force_grad=False):
-        for i, name in enumerate(self._items.keys()):
-            if i >= len(grad_updates): break
-
+        for i, name in enumerate(self._names):
             if name in self._grad_inputs:
                 grad_update = grad_updates[i]
                 if not force_grad:
@@ -163,14 +235,27 @@ class BinaryNode(Node):
     def __init__(self, left, right):
         super().__init__([left, right], ["left", "right"])
 
+class BroadcastNode(UnaryNode):
+    def __init__(self, node, shape, perform_checks=False):
+        if perform_checks:
+            check_type(shape, tuple, raise_exception=True)
+
+        super().__init__(node)
+
+        result = np.empty(shape)
+        result[...] = self._items["node"]
+        self._detect_gradients(Tensor_(result))
+    
+    def _backward(self):
+        self._update_grads([1.])
+
 class NegateNode(UnaryNode):
     def __init__(self, node):
         super().__init__(node)
         self._detect_gradients(Tensor_(-self._items["node"]))
     
     def _backward(self):
-        if "node" in self._inputs:
-            self._update_grads([-1.])
+        self._update_grads([-1.])
 
 class PlusNode(BinaryNode):
     def __init__(self, left, right):
@@ -194,8 +279,8 @@ class MultiplyNode(BinaryNode):
         self._detect_gradients(Tensor_(self._items["left"] * self._items["right"]))
     
     def _backward(self):
-        self._update_grads([self._items["right"],
-                            self._items["left"]])
+        self._update_grads(_DeferCompute(lambda: self._items["right"],
+                                         lambda: self._items["left"]))
 
 class DivideNode(BinaryNode):
     def __init__(self, left, right):
@@ -203,8 +288,8 @@ class DivideNode(BinaryNode):
         self._detect_gradients(Tensor_(self._items["left"] / (self._items["right"] + epsilon)))
     
     def _backward(self):
-        self._update_grads([1. / (self._items["right"] + epsilon),
-                            -self._items["left"] / (self._items["right"] ** 2 + epsilon)])
+        self._update_grads(_DeferCompute(lambda: 1. / (self._items["right"] + epsilon),
+                                         lambda: -self._items["left"] / (self._items["right"] ** 2 + epsilon)))
 
 class PowerNode(BinaryNode):
     def __init__(self, left, right):
@@ -217,8 +302,8 @@ class PowerNode(BinaryNode):
         self._detect_gradients(Tensor_(self._items["left"] ** self._items["right"]))
     
     def _backward(self):
-        self._update_grads([self._items["right"] * (self._items["left"] ** (self._items["right"] - 1.)), 
-                            self._items["output"] * self._extras["log_left"]])
+        self._update_grads(_DeferCompute(lambda: self._items["right"] * (self._items["left"] ** (self._items["right"] - 1.)),
+                                         lambda: self._items["output"] * self._extras["log_left"]))
 
 class LogNode(BinaryNode):
     def __init__(self, left, right):
@@ -232,18 +317,18 @@ class LogNode(BinaryNode):
         self._detect_gradients(Tensor_(self._extras["log_right"] / self._extras["log_left"]))
     
     def _backward(self):
-        self._update_grads([-self._items["output"] / (self._items["left"] * self._extras["log_left"] + epsilon),
-                            1./ (self._items["right"] * self._extras["log_left"] + epsilon)])
+        self._update_grads(_DeferCompute(lambda: -self._items["output"] / (self._items["left"] * self._extras["log_left"] + epsilon),
+                                         lambda: 1./ (self._items["right"] * self._extras["log_left"] + epsilon)))
  
 class MatmulNode(BinaryNode):
     def __init__(self, left, right):
         super().__init__(left, right)
         self._detect_gradients(Tensor_(self._items["left"] @ self._items["right"]))
-    
+
     def _backward(self):
-        self._update_grads([self._output.grad() @ _transpose(self._items["right"]),
-                            _transpose(self._items["left"]) @ self._output.grad()],
-                            force_grad=True)
+        self._update_grads(_DeferCompute(lambda: self._output.grad() @ _transpose(self._items["right"]),
+                                         lambda: _transpose(self._items["left"]) @ self._output.grad()),
+                           force_grad=True)
 
 class MaxNode(BinaryNode):
     def __init__(self, left, right):
@@ -255,10 +340,10 @@ class MaxNode(BinaryNode):
         }
 
         self._detect_gradients(Tensor_(np.maximum(self._items["left"], self._items["right"])))
-    
+
     def _backward(self):
-        self._update_grads([self._extras["left_larger"],
-                            self._extras["right_larger"]])
+        self._update_grads(_DeferCompute(lambda: self._extras["left_larger"],
+                                         lambda: self._extras["right_larger"]))
 
 class MinNode(BinaryNode):
     def __init__(self, left, right):
@@ -272,8 +357,8 @@ class MinNode(BinaryNode):
         self._detect_gradients(Tensor_(np.minimum(self._items["left"], self._items["right"])))
 
     def _backward(self):
-        self._update_grads([self._extras["left_lower"],
-                            self._extras["right_lower"]])
+        self._update_grads(_DeferCompute(lambda: self._extras["left_lower"],
+                                         lambda: self._extras["right_lower"]))
 
 class TanhNode(UnaryNode):
     def __init__(self, node):
@@ -281,7 +366,7 @@ class TanhNode(UnaryNode):
         self._detect_gradients(Tensor_(np.tanh(self._items["node"])))
     
     def _backward(self):
-        self._update_grads([1. - self._items["output"] ** 2])
+        self._update_grads(_DeferCompute(lambda: 1. - self._items["output"] ** 2))
 
 class SigmoidNode(UnaryNode):
     def __init__(self, node):
@@ -289,11 +374,12 @@ class SigmoidNode(UnaryNode):
         self._detect_gradients(Tensor_(_sigmoid(self._items["node"])))
     
     def _backward(self):
-        self._update_grads([self._items["output"] * (1 - self._items["output"])])
+        self._update_grads(_DeferCompute(lambda: self._items["output"] * (1 - self._items["output"])))
 
 class SoftmaxNode(UnaryNode):
-    def __init__(self, node, axis=-1):
-        check_type(axis, int, raise_exception=True)
+    def __init__(self, node, axis=-1, perform_checks=False):
+        if perform_checks:
+            check_type(axis, int, raise_exception=True)
 
         super().__init__(node)
 
@@ -304,7 +390,7 @@ class SoftmaxNode(UnaryNode):
         self._detect_gradients(Tensor_(_softmax(self._items["node"], axis=axis)))
     
     def _backward(self):
-        self._update_grads([self._items["output"] * (self._output.grad() - np.sum(self._output.grad() * self._items["output"], axis=self._extras["axis"], keepdims=True))],
+        self._update_grads(_DeferCompute(lambda: self._items["output"] * (self._output.grad() - np.add.reduce(self._output.grad() * self._items["output"], axis=self._extras["axis"], keepdims=True))),
                            force_grad=True)
 
 class BCENode(BinaryNode):
@@ -319,8 +405,8 @@ class BCENode(BinaryNode):
         self._detect_gradients(Tensor_(-(self._items["left"] * self._extras["log_right"] + (1. - self._items["left"]) * self._extras["log_flip_right"])))
 
     def _backward(self):
-        self._update_grads([self._extras["log_flip_right"] - self._extras["log_right"],
-                            (1. - self._items["left"]) / (1. - self._items["right"] + epsilon) - self._items["left"] / (self._items["right"] + epsilon)])
+        self._update_grads(_DeferCompute(lambda: self._extras["log_flip_right"] - self._extras["log_right"],
+                                         lambda: (1. - self._items["left"]) / (1. - self._items["right"] + epsilon) - self._items["left"] / (self._items["right"] + epsilon)))
 
 class BCEWithLogitsNode(BinaryNode):
     def __init__(self, left, right):
@@ -334,12 +420,13 @@ class BCEWithLogitsNode(BinaryNode):
         self._detect_gradients(Tensor_(-(self._items["left"] * self._extras["log_sigmoid_right"] + (1. - self._items["left"]) * self._extras["log_flip_sigmoid_right"])))
     
     def _backward(self):
-        self._update_grads([self._extras["log_flip_sigmoid_right"] - self._extras["log_sigmoid_right"],
-                            self._extras["sigmoid_right"] - self._items["left"]])
+        self._update_grads(_DeferCompute(lambda: self._extras["log_flip_sigmoid_right"] - self._extras["log_sigmoid_right"],
+                                         lambda: self._extras["sigmoid_right"] - self._items["left"]))
 
 class CrossEntropyNode(BinaryNode):
-    def __init__(self, left, right, axis=-1):
-        check_type(axis, int, raise_exception=True)
+    def __init__(self, left, right, axis=-1, perform_checks=False):
+        if perform_checks:
+            check_type(axis, int, raise_exception=True)
 
         super().__init__(left, right)
 
@@ -348,16 +435,17 @@ class CrossEntropyNode(BinaryNode):
             "log_right" : _ln(self._items["right"]),
         }
 
-        self._detect_gradients(Tensor_(-np.sum(self._items["left"] * self._extras["log_right"], axis=axis)))
+        self._detect_gradients(Tensor_(-np.add.reduce(self._items["left"] * self._extras["log_right"], axis=axis)))
 
     def _backward(self):
-        self._update_grads([-np.expand_dims(self._output.grad(), axis=self._extras["axis"]) * self._extras["log_right"],
-                            -np.expand_dims(self._output.grad(), axis=self._extras["axis"]) * (self._items["left"] / (self._items["right"] + epsilon))],
-                            force_grad=True)
+        self._update_grads(_DeferCompute(lambda: -np.expand_dims(self._output.grad(), axis=self._extras["axis"]) * self._extras["log_right"],
+                                         lambda: -np.expand_dims(self._output.grad(), axis=self._extras["axis"]) * (self._items["left"] / (self._items["right"] + epsilon))),
+                           force_grad=True)
 
 class CrossEntropyWithLogitsNode(BinaryNode):
-    def __init__(self, left, right, axis=-1):
-        check_type(axis, int, raise_exception=True)
+    def __init__(self, left, right, axis=-1, perform_checks=False):
+        if perform_checks:
+            check_type(axis, int, raise_exception=True)
 
         super().__init__(left, right)
 
@@ -365,12 +453,12 @@ class CrossEntropyWithLogitsNode(BinaryNode):
         self._extras["softmax_right"] = _softmax(self._items["right"], axis=axis)
         self._extras["log_softmax_right"] = _ln(self._extras["softmax_right"])
 
-        self._detect_gradients(Tensor_(-np.sum(self._items["left"] * self._extras["log_softmax_right"], axis=axis)))
+        self._detect_gradients(Tensor_(-np.add.reduce(self._items["left"] * self._extras["log_softmax_right"], axis=axis)))
     
     def _backward(self):
-        self._update_grads([-np.expand_dims(self._output.grad(), axis=self._extras["axis"]) * self._extras["log_softmax_right"],
-                            np.expand_dims(self._output.grad(), axis=self._extras["axis"]) * (self._extras["softmax_right"] - self._items["left"])],
-                            force_grad=True)
+        self._update_grads(_DeferCompute(lambda: -np.expand_dims(self._output.grad(), axis=self._extras["axis"]) * self._extras["log_softmax_right"],
+                                         lambda: np.expand_dims(self._output.grad(), axis=self._extras["axis"]) * (self._extras["softmax_right"] - self._items["left"])),
+                           force_grad=True)
 
 class MSENode(BinaryNode):
     def __init__(self, left, right):
@@ -378,17 +466,21 @@ class MSENode(BinaryNode):
         self._detect_gradients(Tensor_(((self._items["left"] - self._items["right"]) ** 2)))
     
     def _backward(self):
-        self._update_grads([2 * (self._items["left"] - self._items["right"]),
-                            2 * (self._items["right"] - self._items["left"])])
+        self._update_grads(_DeferCompute(lambda: 2 * (self._items["left"] - self._items["right"]),
+                                         lambda: 2 * (self._items["right"] - self._items["left"])))
 
 class MeanNode(UnaryNode):
-    def __init__(self, node, axis=None, keepdims=False):
-        check_type(axis, (type(None), int, tuple, list), raise_exception=True)
-        if axis and not isinstance(axis, int):
-            for ax in axis: check_type(ax, int, raise_exception=True)
-            axis = tuple(axis)
+    def __init__(self, node, axis=None, keepdims=False, perform_checks=False):
+        if perform_checks:
+            check_type(axis, type(None), int, tuple, list, raise_exception=True)
 
-        check_type(keepdims, bool, raise_exception=True)
+            if axis and not isinstance(axis, int):
+                for ax in axis:
+                    check_type(ax, int, raise_exception=True)
+                
+                axis = tuple(axis)
+
+            check_type(keepdims, bool, raise_exception=True)
 
         super().__init__(node)
 
@@ -403,20 +495,23 @@ class MeanNode(UnaryNode):
         self._detect_gradients(Tensor_(np.mean(self._items["node"], axis=axis, keepdims=keepdims)))
     
     def _backward(self):
-        grad_update = self._output.grad() / self._extras["num_lost_elements"]
-        if not self._extras["keepdims"]:
-            grad_update = np.expand_dims(grad_update, axis=self._extras["axes_lost"])
+        grad_update = _DeferCompute(lambda: (self._output.grad() / self._extras["num_lost_elements"] if self._extras["keepdims"]
+                                             else np.expand_dims(self._output.grad() / self._extras["num_lost_elements"], axis=self._extras["axes_lost"])))
         
-        self._update_grads([grad_update], force_grad=True)
+        self._update_grads(grad_update, force_grad=True)
 
 class SumNode(UnaryNode):
-    def __init__(self, node, axis=None, keepdims=False):
-        check_type(axis, (type(None), int, tuple, list), raise_exception=True)
-        if axis and not isinstance(axis, int):
-            for ax in axis: check_type(ax, int, raise_exception=True)
-            axis = tuple(axis)
+    def __init__(self, node, axis=None, keepdims=False, perform_checks=False):
+        if perform_checks:
+            check_type(axis, type(None), int, tuple, list, raise_exception=True)
 
-        check_type(keepdims, bool, raise_exception=True)
+            if axis and not isinstance(axis, int):
+                for ax in axis:
+                    check_type(ax, int, raise_exception=True)
+                
+                axis = tuple(axis)
+
+            check_type(keepdims, bool, raise_exception=True)
 
         super().__init__(node)
 
@@ -426,21 +521,10 @@ class SumNode(UnaryNode):
             "axes_lost" : tuple(range(self._items["node"].ndim)) if axis is None else axis
         }
 
-        self._detect_gradients(Tensor_(np.sum(self._items["node"], axis=axis, keepdims=keepdims)))
+        self._detect_gradients(Tensor_(np.add.reduce(self._items["node"], axis=axis, keepdims=keepdims)))
     
     def _backward(self):
-        grad_update = self._output.grad()
-        if not self._extras["keepdims"]:
-            grad_update = np.expand_dims(grad_update, axis=self._extras["axes_lost"])
+        grad_update = _DeferCompute(lambda: (self._output.grad() if self._extras["keepdims"]
+                                             else np.expand_dims(self._output.grad(), axis=self._extras["axes_lost"])))
         
-        self._update_grads([grad_update], force_grad=True)
-
-class BroadcastNode(UnaryNode):
-    def __init__(self, node, shape):
-        check_type(shape, tuple, raise_exception=True)
-
-        super().__init__(node)
-        self._detect_gradients(Tensor_(np.broadcast_to(self._items["node"], shape).copy()))
-    
-    def _backward(self):
-        self._update_grads([1.])
+        self._update_grads(grad_update, force_grad=True)
