@@ -18,7 +18,7 @@ y_test = np.eye(10)[y_test]
 data = tf.data.Dataset.from_tensor_slices((x_train, y_train)).shuffle(10000).batch(128).prefetch(tf.data.experimental.AUTOTUNE)
 
 model = tf.keras.models.Sequential([
-    tf.keras.layers.Dense(64, activation="relu"),
+    tf.keras.layers.Dense(32, activation="relu"),
     tf.keras.layers.Dense(10),
 ])
 

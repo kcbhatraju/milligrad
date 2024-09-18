@@ -20,8 +20,8 @@ y_test = np.eye(10)[y_test]
 data = mg.data.DataLoader(x_train, y_train, batch_size=128, shuffle=True)
 
 model = mg.models.Sequential([
-    mg.layers.Dense(28*28, 64, activation="relu"),
-    mg.layers.Dense(64, 10),
+    mg.layers.Dense(28*28, 32, activation="relu"),
+    mg.layers.Dense(32, 10),
 ])
 
 loss = mg.losses.CrossentropyLoss(from_logits=True)
